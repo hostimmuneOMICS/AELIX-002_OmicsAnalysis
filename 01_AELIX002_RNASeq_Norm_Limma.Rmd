@@ -1,0 +1,507 @@
+---
+title: "AELIX-002 RNA-seq Transcriptome Analysis"
+author: "Yovaninna Alarcón-Soto"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+---
+  
+  
+# 1. Introduction: AELIX-002 transcriptome study description
+  
+This is the transcriptome (RNA-Seq) analysis of the AELIX-002 clinical trial. 
+https://doi.org/10.1038/s41591-022-02060-2
+
+**Timepoints Description**
+  
+* T01: Baseline, week 0 DDDMM/PPPPP regimen. First dose of DNA.HTI (D). 
+* T02: Week 24 DDDMM/PPPPP regimen. Two weeks after second dose of MVA.HTI (M).
+* T03: Baseline, week 0 CCM/PPP regimen. First dose of ChAdOx1.HTI (C).
+* T04: Week 16 CCM/PPP regimen. Four weeks after second dose of ChAdOx1.HTI (C).
+* T05: Week 32 CCM/PPP regimen. Antiretroviral treatmen interruption (ATI) start.  
+
+**Participants Description**
+  
+From the 45 participants of the study, 41 completed the vaccination regimen. Moreover:
+  
+* 38 participants with 5 timepoints (w0 and w24 DDDMM/PPPPP regimen, W0, w16, and w32 CCM/PPP regimen).
+* Participant 11 (Vax) with 4 timepoints (w24 DDDMM missing, nordre: 2018030085).
+* Participant 20 (Pbo) with 4 timepoints (w24 PPPPP missing, nordre: 2018110220).
+* Participant 49 (Vax) with 3 timepoints (w16 and w32 CCM missing, nordre: 2019090082 and 2020010006, respectively).
+* Participants with beneficial alleles: 13, 19, 22, 27, 30, and 31 (vax), 16, 17, and 36 (Pbo) were excluded for this analysis.
+* Participant 01 was removed because is the only woman in the study.
+
+# 2. Transcriptome analysis - Data Normalization and Exploration
+
+# 2.1. Data Pre-processing
+
+```{r libraries, include = F, warning=F}
+library(limma)
+library(edgeR)
+library(sva)
+library(ggplot2)
+library(grid)
+library(gridExtra)
+library(knitr)
+library(RColorBrewer)
+library(mixOmics)
+library(dplyr)
+library(dendextend)
+library(gplots)
+library(VennDiagram)
+library(tidyr)
+library(DOSE)
+library(GO.db)
+library(org.Hs.eg.db)
+library(GSEABase)
+library(clusterProfiler)
+library(enrichplot)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(biomaRt)
+library(Mfuzz)
+library(ggrepel)
+library(reshape)
+library(ggpubr)
+library(readxl)
+```
+
+```{r load datasets}
+# Matrix of read counts
+data <- read_excel("Read_counts.xlsx")
+# Informations of participants
+info <- read.csv2("Info_sample.csv")
+# Selecting only the counts
+counts <- data[, 12:162]
+# Creating rownames for counts dataframe
+rownames(counts) <- paste(data$Transcript_ID , data$Gene_Symbol, data$Description) 
+```
+
+
+# 2.2. Data Normalization
+
+The normalization method Trimmed Mean of M values (TMM) accounts for sequencing depth, 
+RNA composition and gene length. This normalization function is from the R package edge R
+
+```{r Data Normalization}
+info$npac <- as.factor(info$npac)
+y <- DGEList(counts = counts) 
+# Object from a table of counts (rows=features, columns=samples), group indicator for each 
+# column, library size (optional) and a table of feature annotation (optional).
+isexpr <- rowSums(cpm(y) > 1) >= 5 
+# Compute counts per million and take those genes that have at least 1 count in 5 of the samples. 
+y <- y[isexpr, keep.lib.size = FALSE]
+y <- calcNormFactors(y) 
+# Apply the scale normalization that by default is TMM. 
+save(y, file = "TMMcounts.RData")
+```
+
+# 2.3 Voom transformation
+```{r}
+voom_counts1 <- voom(y, design = NULL)
+hist(voom_counts1$E)
+voom_counts <- voom_counts1$E
+write.table(voom_counts, file ="Log2NormalizedCounts.txt")
+save(y, info, voom_counts, file = "DataRNA_filterIND.RData")
+```
+
+
+# 3. Exploratory Data Analysis
+
+# 3.1. Principal Component Analysis (PCA)
+
+PCA on log2 normalized data
+
+```{r, PCA log2 Normalized Data}
+# Run the method
+MyResult_PCA <- pca(t(voom_counts))  
+MyResult_PCA2 <- pca(t(voom_counts), ncomp = 4)   # using 4 components
+
+# Plot the samples according to different variables (components 1 and 2)
+plotIndiv(MyResult_PCA2, group = info$Time2, centre = FALSE, ellipse = FALSE, legend = TRUE)  
+plotIndiv(MyResult_PCA, group = info$Treat, centre = FALSE, ellipse = FALSE, legend = TRUE)  
+plotIndiv(MyResult_PCA, group = info$Resumption, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA, group = info$Cri1, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA, group = info$Cri2, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA, group = info$Cri3, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA, group = info$Cri4, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA, group = info$npac, centre = FALSE, ellipse = FALSE, legend = TRUE)
+
+# Plot the samples according to different variables (components 1 and 4)
+plotIndiv(MyResult_PCA2, group = info$Time2,  comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)  
+plotIndiv(MyResult_PCA2, group = info$Treat, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)  
+plotIndiv(MyResult_PCA2, group = info$Resumption, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA2, group = info$Cri1, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA2, group = info$Cri2, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA2, group = info$Cri3, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA2, group = info$Cri4, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA2, group = info$npac, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+```
+
+*Data separated between vaccinees and placebos*
+```{r}
+voom_counts_vax <- voom_counts[, grep("^V", colnames(voom_counts))]
+voom_counts_pbo <- voom_counts[, grep("^P", colnames(voom_counts))]
+info_vax <- subset(info, info$Treat == "Vax")
+info_pbo <- subset(info, info$Treat == "Pbo")
+```
+
+*PCA for Vaccine*
+
+```{r, PCA log2 Normalized Data}
+# Run the method
+MyResult_PCA_Vax <- pca(t(voom_counts_vax)) 
+MyResult_PCA_Vax2 <- pca(t(voom_counts_vax), ncomp = 4)   
+
+# Plot the samples according to different variables with 2 components
+plotIndiv(MyResult_PCA_Vax, group = info_vax$Time2, centre = FALSE, ellipse = FALSE, legend = TRUE)  
+plotIndiv(MyResult_PCA_Vax, group = info_vax$Resumption, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_Vax, group = info_vax$Cri1, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_Vax, group = info_vax$Cri2, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_Vax, group = info_vax$Cri3, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_Vax, group = info_vax$Cri4, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_Vax, group = info_vax$npac, centre = FALSE, ellipse = FALSE, legend = TRUE)
+
+# Plot the samples according to different variables with 4 components
+plotIndiv(MyResult_PCA_Vax2, group = info_vax$Time2, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)  
+plotIndiv(MyResult_PCA_Vax2, group = info_vax$Resumption, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_Vax2, group = info_vax$Cri1, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_Vax2, group = info_vax$Cri2, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_Vax2, group = info_vax$Cri3, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_Vax2, group = info_vax$Cri4, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_Vax2, group = info_vax$npac, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+```
+
+*PCA for Placebo*
+
+```{r, PCA log2 Normalized Data}
+# Run the method
+MyResult_PCA_Pbo <- pca(t(voom_counts_pbo))  
+MyResult_PCA_Pbo2 <- pca(t(voom_counts_pbo), ncomp = 4)  
+
+# Plot the samples according to different variables with two components
+plotIndiv(MyResult_PCA_Pbo, group = info_pbo$Time2, centre = FALSE, ellipse = FALSE, legend = TRUE)  
+plotIndiv(MyResult_PCA_Pbo, group = info_pbo$Resumption, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_Pbo, group = info_pbo$Cri1, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_Pbo, group = info_pbo$Cri2, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_Pbo, group = info_pbo$Cri3, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_Pbo, group = info_pbo$Cri4, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_Pbo, group = info_pbo$npac, centre = FALSE, ellipse = FALSE, legend = TRUE)
+
+# Plot the samples according to different variables with four components
+plotIndiv(MyResult_PCA_Pbo2, group = info_pbo$Time2, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)  
+plotIndiv(MyResult_PCA_Pbo2, group = info_pbo$Resumption, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_Pbo2, group = info_pbo$Cri1, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_Pbo2, group = info_pbo$Cri2, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_Pbo2, group = info_pbo$Cri3, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_Pbo2, group = info_pbo$Cri4, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_Pbo2, group = info_pbo$npac, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+```
+
+
+*Data separated by time points*
+```{r}
+voom_counts_t01 <- voom_counts[, grep("[[:alpha:]]+[[:digit:]]+[[:digit:]]+T01$", colnames(voom_counts))]
+voom_counts_t02 <- voom_counts[, grep("[[:alpha:]]+[[:digit:]]+[[:digit:]]+T02$", colnames(voom_counts))]
+voom_counts_t03 <- voom_counts[, grep("[[:alpha:]]+[[:digit:]]+[[:digit:]]+T03$", colnames(voom_counts))]
+voom_counts_t04 <- voom_counts[, grep("[[:alpha:]]+[[:digit:]]+[[:digit:]]+T04$", colnames(voom_counts))]
+voom_counts_t05 <- voom_counts[, grep("[[:alpha:]]+[[:digit:]]+[[:digit:]]+T05$", colnames(voom_counts))]
+info_t01 <- subset(info, info$Time2 == 1)
+info_t02 <- subset(info, info$Time2 == 2)
+info_t03 <- subset(info, info$Time2 == 3)
+info_t04 <- subset(info, info$Time2 == 4)
+info_t05 <- subset(info, info$Time2 == 5)
+```
+
+*PCA for Time01: Baseline, week 0 DDDMM/PPPPP regimen. First dose of DNA.HTI. *
+
+```{r, PCA log2 Normalized Data}
+# Run the method
+MyResult_PCA_t01 <- pca(t(voom_counts_t01))   
+MyResult_PCA_t01_2 <- pca(t(voom_counts_t01), ncomp = 4)   
+
+# Plot the samples according to different variables with 2 components
+plotIndiv(MyResult_PCA_t01, group = info_t01$Treat, centre = FALSE, ellipse = FALSE, legend = TRUE)  
+plotIndiv(MyResult_PCA_t01, group = info_t01$Resumption, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t01, group = info_t01$Cri1, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t01, group = info_t01$Cri2, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t01, group = info_t01$Cri3, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t01, group = info_t01$Cri4, centre = FALSE, ellipse = FALSE, legend = TRUE)
+
+# Plot the samples according to different variables with 4 components
+plotIndiv(MyResult_PCA_t01_2, group = info_t01$Treat, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)  
+plotIndiv(MyResult_PCA_t01_2, group = info_t01$Resumption, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t01_2, group = info_t01$Cri1, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t01_2, group = info_t01$Cri2, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t01_2, group = info_t01$Cri3, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t01_2, group = info_t01$Cri4, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+```
+
+*PCA for Time02: Week 24 DDDMM/PPPPP regimen. Two weeks after second dose of MVA.HTI.*
+
+```{r, PCA log2 Normalized Data}
+# Run the method
+MyResult_PCA_t02 <- pca(t(voom_counts_t02)) 
+MyResult_PCA_t02_2 <- pca(t(voom_counts_t02), ncomp = 4) 
+
+# Plot the samples according to different variables with 2 components
+plotIndiv(MyResult_PCA_t02, group = info_t02$Treat, centre = FALSE, ellipse = FALSE, legend = TRUE)  
+plotIndiv(MyResult_PCA_t02, group = info_t02$Resumption, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t02, group = info_t02$Cri1, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t02, group = info_t02$Cri2, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t02, group = info_t02$Cri3, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t02, group = info_t02$Cri4, centre = FALSE, ellipse = FALSE, legend = TRUE)
+
+# Plot the samples according to different variables with 4 components
+plotIndiv(MyResult_PCA_t02_2, group = info_t02$Treat, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)  
+plotIndiv(MyResult_PCA_t02_2, group = info_t02$Resumption, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t02_2, group = info_t02$Cri1, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t02_2, group = info_t02$Cri2, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t02_2, group = info_t02$Cri3, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t02_2, group = info_t02$Cri4, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+```
+
+*PCA for Time03: Baseline, week 0 CCM/PPP regimen. First dose of ChAdOx1.HTI.*
+
+```{r, PCA log2 Normalized Data}
+# Run the method
+MyResult_PCA_t03 <- pca(t(voom_counts_t03)) 
+MyResult_PCA_t03_2 <- pca(t(voom_counts_t03), ncomp = 4) 
+
+# Plot the samples according to different variables with two components
+plotIndiv(MyResult_PCA_t03, group = info_t03$Treat, centre = FALSE, ellipse = FALSE, legend = TRUE)  
+plotIndiv(MyResult_PCA_t03, group = info_t03$Resumption, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t03, group = info_t03$Cri1, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t03, group = info_t03$Cri2, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t03, group = info_t03$Cri3, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t03, group = info_t03$Cri4, centre = FALSE, ellipse = FALSE, legend = TRUE)
+
+# Plot the samples according to different variables with 4 components
+plotIndiv(MyResult_PCA_t03_2, group = info_t03$Treat, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)  
+plotIndiv(MyResult_PCA_t03_2, group = info_t03$Resumption, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t03_2, group = info_t03$Cri1, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t03_2, group = info_t03$Cri2, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t03_2, group = info_t03$Cri3, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t03_2, group = info_t03$Cri4, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+```
+
+*PCA for Time04: Week 16 CCM/PPP regimen. Four weeks after second dose of ChAdOx1.HTI.*
+
+```{r, PCA log2 Normalized Data}
+# Run the method
+MyResult_PCA_t04 <- pca(t(voom_counts_t04))   
+MyResult_PCA_t04_2 <- pca(t(voom_counts_t04), ncomp = 4)   
+
+# Plot the samples according to different variables with 2 components
+plotIndiv(MyResult_PCA_t04, group = info_t04$Treat, centre = FALSE, ellipse = FALSE, legend = TRUE)  
+plotIndiv(MyResult_PCA_t04, group = info_t04$Resumption, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t04, group = info_t04$Cri1, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t04, group = info_t04$Cri2, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t04, group = info_t04$Cri3, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t04, group = info_t04$Cri4, centre = FALSE, ellipse = FALSE, legend = TRUE)
+
+# Plot the samples according to different variables with 4 components
+plotIndiv(MyResult_PCA_t04_2, group = info_t04$Treat, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)  
+plotIndiv(MyResult_PCA_t04_2, group = info_t04$Resumption, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t04_2, group = info_t04$Cri1, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t04_2, group = info_t04$Cri2, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t04_2, group = info_t04$Cri3, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t04_2, group = info_t04$Cri4, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+```
+
+*PCA for Time05: Week 32 CCM/PPP regimen. ATI start.*
+
+```{r, PCA log2 Normalized Data}
+# Run the method
+MyResult_PCA_t05 <- pca(t(voom_counts_t05))   
+MyResult_PCA_t05_2 <- pca(t(voom_counts_t05), ncomp = 4)   
+
+# Plot the samples according to different variables with 2 components
+plotIndiv(MyResult_PCA_t05, group = info_t05$Treat, centre = FALSE, ellipse = FALSE, legend = TRUE)  
+plotIndiv(MyResult_PCA_t05, group = info_t05$Resumption, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t05, group = info_t05$Cri1, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t05, group = info_t05$Cri2, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t05, group = info_t05$Cri3, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t05, group = info_t05$Cri4, centre = FALSE, ellipse = FALSE, legend = TRUE)
+
+# Plot the samples according to different variables with 4 components
+plotIndiv(MyResult_PCA_t05_2, group = info_t05$Treat, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)  
+plotIndiv(MyResult_PCA_t05_2, group = info_t05$Resumption, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t05_2, group = info_t05$Cri1, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t05_2, group = info_t05$Cri2, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t05_2, group = info_t05$Cri3, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t05_2, group = info_t05$Cri4, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+```
+
+*PCA for resumption in vaccinees*
+```{r, PCA}
+voom_counts_t01_vax <- voom_counts_t01[, grep("^V", colnames(voom_counts_t01))]
+voom_counts_t02_vax <- voom_counts_t02[, grep("^V", colnames(voom_counts_t02))]
+voom_counts_t03_vax <- voom_counts_t03[, grep("^V", colnames(voom_counts_t03))]
+voom_counts_t04_vax <- voom_counts_t04[, grep("^V", colnames(voom_counts_t04))]
+voom_counts_t05_vax <- voom_counts_t05[, grep("^V", colnames(voom_counts_t05))]
+info_t01_vax <- subset(info_t01, info_t01$Treat == "Vax")
+info_t02_vax <- subset(info_t02, info_t02$Treat == "Vax")
+info_t03_vax <- subset(info_t03, info_t03$Treat == "Vax")
+info_t04_vax <- subset(info_t04, info_t04$Treat == "Vax")
+info_t05_vax <- subset(info_t05, info_t05$Treat == "Vax")
+
+# Run the method
+MyResult_PCA_t01_vax <- pca(t(voom_counts_t01_vax))   
+MyResult_PCA_t01_vax2 <- pca(t(voom_counts_t01_vax), ncomp = 4) 
+MyResult_PCA_t02_vax <- pca(t(voom_counts_t02_vax))   
+MyResult_PCA_t02_vax2 <- pca(t(voom_counts_t02_vax), ncomp = 4)  
+MyResult_PCA_t03_vax <- pca(t(voom_counts_t03_vax))   
+MyResult_PCA_t03_vax2 <- pca(t(voom_counts_t03_vax), ncomp = 4)  
+MyResult_PCA_t04_vax <- pca(t(voom_counts_t04_vax))   
+MyResult_PCA_t04_vax2 <- pca(t(voom_counts_t04_vax), ncomp = 4)  
+MyResult_PCA_t05_vax <- pca(t(voom_counts_t05_vax))   
+MyResult_PCA_t05_vax2 <- pca(t(voom_counts_t05_vax), ncomp = 4)  
+
+# Plot the samples according to different variables with 2 components
+plotIndiv(MyResult_PCA_t01_vax, group = info_t01_vax$Resumption, centre = FALSE, ellipse = FALSE, legend = TRUE)  
+plotIndiv(MyResult_PCA_t02_vax, group = info_t02_vax$Resumption, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t03_vax, group = info_t03_vax$Resumption, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t04_vax, group = info_t04_vax$Resumption, centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t05_vax, group = info_t05_vax$Resumption, centre = FALSE, ellipse = FALSE, legend = TRUE)
+
+# 2 Plot the samples according to different variables with 4 components
+plotIndiv(MyResult_PCA_t01_vax2, group = info_t01_vax$Resumption, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)  
+plotIndiv(MyResult_PCA_t02_vax2, group = info_t02_vax$Resumption, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t03_vax2, group = info_t03_vax$Resumption, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t04_vax2, group = info_t04_vax$Resumption, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+plotIndiv(MyResult_PCA_t05_vax2, group = info_t05_vax$Resumption, comp = c(1,4), centre = FALSE, ellipse = FALSE, legend = TRUE)
+
+```
+
+# 4. Transcriptome Analysis - Differential Expression Analysis
+
+The first endpoint is try to identify the molecular mechanisms involved in the different time points. 
+
+It is necessary to apply the voom function to apply limma in RNA-Seq: Transform count data to log2-counts per million (logCPM) estimate the mean-variance relationship use this to compute appropriate observation-level weights. The data are then ready for linear modelling. We include a correlation structure between the individuals: duplicateCorrelation
+
+# 4.1. Design - Week
+
+```{r, limma, warning = FALSE}
+rm(list = ls())
+load("../RNASeq/DataRNA_filterIND.RData")
+npac <- factor(info$npac)
+length(levels(npac)) # 31 participants
+Time <- factor(info$Time2)
+levels(Time) <- c("T1", "T2", "T3", "T4", "T5")
+mod1 <- model.matrix(~0 + Time)
+colnames(mod1)= c(levels(Time))
+contr.matrix1 <- makeContrasts(
+  T1vsT2 = T2 - T1,
+  T1vsT3 = T3 - T1,
+  T1vsT4 = T4 - T1,
+  T1vsT5 = T5 - T1,
+  T2vsT3 = T3 - T2,
+  T2vsT4 = T4 - T2,
+  T2vsT5 = T5 - T2,
+  T3vsT4 = T4 - T3,
+  T3vsT5 = T5 - T3,
+  T4vsT5 = T5 - T4,
+  levels=colnames(mod1))
+
+# Model
+# Since AELIX-002 is a longitudinal study, we add information of the individual. 
+cor1 <- duplicateCorrelation(voom_counts, mod1, block = npac)
+fit <- lmFit(voom_counts, mod1, block = npac, correlation = cor1$consensus)
+
+# Simple comparison
+fit1 <- contrasts.fit(fit, contrasts = contr.matrix1)
+fit2 <- eBayes(fit1)
+summary(decideTests(fit2))
+dir.create("../Analyses/DEGtimepoints")
+dir.create("../Analyses/DEGtimepoints/LimmaBlock")
+write.table(summary(decideTests(fit2)), file = "../Analyses/DEGtimepoints/SummaryRes.txt", sep = "\t")
+for (i in  colnames(fit2$coefficients)){
+  toptable1 <- topTable(fit2, coef = i, sort = "p", n = Inf, adjust = "BH",  resort.by = "p")
+  write.table(toptable1, sep = ";", paste(paste("../Analyses/DEGtimepoints/LimmaBlock", i), ".txt", sep = ""), quote = F)
+  toptable2 <- topTable(fit2, coef = i, sort = "p", n = Inf, adjust = "BH",  resort.by = "p", p.value = 0.2)
+  write.table(toptable2, sep = ";", paste(paste("../Analyses/DEGtimepoints/LimmaBlock/qval", i), ".txt", sep = ""), quote = F)
+}
+```
+
+*Repeat the previous one for Vax and Pbo*
+
+*For Vax*
+```{r, limma, warning = FALSE}
+rm(list = ls())
+load("../RNASeq/DataRNA_filterIND.RData")
+npac_vax <- factor(info_vax$npac)
+length(levels(npac_vax)) # 19 participants
+Time_vax <- factor(info_vax$Time2)
+levels(Time_vax) <- c("T1", "T2", "T3", "T4", "T5")
+mod1_vax <- model.matrix(~0 + Time_vax)
+colnames(mod1_vax)= c(levels(Time_vax))
+contr.matrix1_vax <- makeContrasts(
+  T1vsT2 = T2 - T1,
+  T1vsT3 = T3 - T1,
+  T1vsT4 = T4 - T1,
+  T1vsT5 = T5 - T1,
+  T2vsT3 = T3 - T2,
+  T2vsT4 = T4 - T2,
+  T2vsT5 = T5 - T2,
+  T3vsT4 = T4 - T3,
+  T3vsT5 = T5 - T3,
+  T4vsT5 = T5 - T4,
+  levels=colnames(mod1_vax))
+
+# Model
+# Since AELIX-002 is a longitudinal study, we add information of the individual. 
+cor1_vax <- duplicateCorrelation(voom_counts_vax, mod1_vax, block = npac_vax)
+fit_vax <- lmFit(voom_counts_vax, mod1_vax, block = npac_vax, correlation = cor1_vax$consensus)
+
+# Simple comparison
+fit1_vax <- contrasts.fit(fit_vax, contrasts = contr.matrix1_vax)
+fit2_vax <- eBayes(fit1_vax)
+summary(decideTests(fit2_vax))
+write.table(summary(decideTests(fit2_vax)), file = "../Analyses/DEGtimepoints/SummaryRes_Vax.txt", sep = "\t")
+for (i in  colnames(fit2_vax$coefficients)){
+  toptable1_vax <- topTable(fit2_vax, coef = i, sort = "p", n = Inf, adjust = "BH",  resort.by = "p")
+  write.table(toptable1_vax, sep = ";", dec = ",", paste(paste("../Analyses/DEGtimepoints/LimmaBlock_Vax", i), ".txt", sep = ""), quote = F)
+}
+```
+
+
+*For Pbo*
+```{r, limma, warning = FALSE}
+rm(list = ls())
+load("../RNASeq/DataRNA_filterIND.RData")
+npac_pbo <- factor(info_pbo$npac)
+length(levels(npac_pbo)) # 12 participants
+Time_pbo <- factor(info_pbo$Time2)
+levels(Time_pbo) <- c("T1", "T2", "T3", "T4", "T5")
+mod1_pbo <- model.matrix(~0 + Time_pbo)
+colnames(mod1_pbo)= c(levels(Time_pbo))
+contr.matrix1_pbo <- makeContrasts(
+  T1vsT2 = T2 - T1,
+  T1vsT3 = T3 - T1,
+  T1vsT4 = T4 - T1,
+  T1vsT5 = T5 - T1,
+  T2vsT3 = T3 - T2,
+  T2vsT4 = T4 - T2,
+  T2vsT5 = T5 - T2,
+  T3vsT4 = T4 - T3,
+  T3vsT5 = T5 - T3,
+  T4vsT5 = T5 - T4,
+  levels=colnames(mod1_pbo))
+
+# Model
+# Since AELIX-002 is a longitudinal study, we add information of the individual. 
+cor1_pbo <- duplicateCorrelation(voom_counts_pbo, mod1_pbo, block = npac_pbo)
+fit_pbo <- lmFit(voom_counts_pbo, mod1_pbo, block = npac_pbo, correlation = cor1_pbo$consensus)
+
+# Simple comparison
+fit1_pbo <- contrasts.fit(fit_pbo, contrasts = contr.matrix1_pbo)
+fit2_pbo <- eBayes(fit1_pbo)
+summary(decideTests(fit2_pbo))
+write.table(summary(decideTests(fit2_pbo)), file = "../Analyses/DEGtimepoints/SummaryRes_Pbo.txt", sep = "\t")
+for (i in  colnames(fit2_pbo$coefficients)){
+  toptable1_pbo <- topTable(fit2_pbo, coef = i, sort = "p", n = Inf, adjust = "BH",  resort.by = "p")
+  write.table(toptable1_pbo, sep = ";", dec = ",", paste(paste("../Analyses/DEGtimepoints/LimmaBlock_Pbo", i), ".txt", sep = ""), quote = F)
+}
+```

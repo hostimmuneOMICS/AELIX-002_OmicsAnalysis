@@ -1,0 +1,437 @@
+---
+title: "AELIX-002 RNA-seq: MFuzz Clustering of Late-Resumption Genes"
+author: "Yovaninna Alarcón-Soto"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: hide
+---
+
+# Overview
+
+This report performs soft clustering of selected genes from the AELIX-002 RNA-seq analysis using **MFuzz**. The input file is expected to contain the selected genes and their log2-normalized expression values.
+
+For each gene, the median expression is calculated at each of five timepoints (T1–T5) among the seven samples per timepoint specified for the late-resumption vaccine group. Gene profiles are then standardized and clustered using MFuzz.
+
+**Important:** the sample columns are selected using fixed column positions from the original input layout. Confirm that the input file has the same column order before running this report.
+
+## Timepoints
+
+- **T1:** baseline / first DNA.HTI dose.
+- **T2:** two weeks after the second MVA.HTI dose.
+- **T3:** baseline / first ChAdOx1.HTI dose.
+- **T4:** four weeks after the second ChAdOx1.HTI dose.
+- **T5:** start of antiretroviral treatment interruption (ATI).
+
+# 1. Setup
+
+## Packages
+
+```{r setup, message=FALSE, warning=FALSE}
+if (!requireNamespace("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+}
+
+if (!requireNamespace("Mfuzz", quietly = TRUE)) {
+  BiocManager::install("Mfuzz", ask = FALSE, update = FALSE)
+}
+
+library(Mfuzz)
+library(Biobase)
+```
+
+## Analysis settings
+
+```{r settings}
+input_file <- "Selected_genes_mfuzz_late_timepoints.csv"
+output_dir <- "mfuzz_late_outputs"
+
+n_clusters <- 7
+membership_threshold <- 0.1
+random_seed <- 20220928
+
+time_labels <- c("T1", "T2", "T3", "T4", "T5")
+
+# Column ranges within the expression matrix (after the first two
+# identifier columns have been excluded).
+sample_columns <- list(
+  T1 = 60:66,
+  T2 = 79:85,
+  T3 = 97:103,
+  T4 = 116:122,
+  T5 = 134:140
+)
+
+dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+```
+
+# 2. Import and validate the expression data
+
+The input is read using a semicolon separator. The script expects:
+
+- column 2 to contain the gene identifier used as the row name;
+- columns 3–153 to contain numeric log2-normalized expression values;
+- the sample columns to follow the original ordering assumed in `sample_columns`.
+
+```{r import-data}
+if (!file.exists(input_file)) {
+  stop(
+    "Input file not found: ", input_file,
+    "\nSet `input_file` to the correct path before knitting."
+  )
+}
+
+expression_data <- read.csv(
+  file = input_file,
+  sep = ";",
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+
+if (ncol(expression_data) < max(unlist(sample_columns)) + 2L) {
+  stop(
+    "The input file does not contain enough columns for the configured ",
+    "sample ranges. Check the input file and `sample_columns`."
+  )
+}
+
+if (ncol(expression_data) < 153L) {
+  warning(
+    "The input has fewer than 153 columns. Confirm that the expected ",
+    "expression columns are present."
+  )
+}
+
+gene_ids <- as.character(expression_data[[2]])
+
+if (anyNA(gene_ids) || any(gene_ids == "")) {
+  stop("The gene identifier column contains missing or empty values.")
+}
+
+if (anyDuplicated(gene_ids)) {
+  warning(
+    "Duplicated gene identifiers were found. MFuzz requires unique row names; ",
+    "duplicated identifiers will be made unique with make.unique()."
+  )
+  gene_ids <- make.unique(gene_ids)
+}
+
+# Expression values are expected in columns 3–153.
+expression_matrix <- as.matrix(expression_data[, 3:153, drop = FALSE])
+suppressWarnings(storage.mode(expression_matrix) <- "numeric")
+rownames(expression_matrix) <- gene_ids
+
+if (anyNA(expression_matrix)) {
+  stop(
+    "Missing or non-numeric values were found in columns 3–153. ",
+    "Check the input file before continuing."
+  )
+}
+
+if (any(!is.finite(expression_matrix))) {
+  stop("The expression matrix contains non-finite values.")
+}
+
+if (nrow(expression_matrix) == 0L) {
+  stop("The input contains no genes.")
+}
+
+cat("Genes in input:", nrow(expression_matrix), "\n")
+cat("Expression columns:", ncol(expression_matrix), "\n")
+```
+
+# 3. Summarize expression by timepoint
+
+For each gene and timepoint, the median is calculated across the seven sample columns specified for that timepoint. The column positions are retained from the original analysis and should be checked whenever the input file changes.
+
+```{r summarize-timepoints}
+# Convert the configured sample positions to positions in the full input file.
+# The expression matrix starts at input column 3, so subtract 2.
+sample_columns_matrix <- lapply(sample_columns, function(x) x - 2L)
+
+if (any(unlist(sample_columns_matrix) < 1L) ||
+    any(unlist(sample_columns_matrix) > ncol(expression_matrix))) {
+  stop("At least one configured sample range is outside the expression matrix.")
+}
+
+timepoint_medians <- vapply(
+  sample_columns_matrix,
+  function(cols) {
+    apply(expression_matrix[, cols, drop = FALSE], 1, median, na.rm = FALSE)
+  },
+  FUN.VALUE = numeric(nrow(expression_matrix))
+)
+
+timepoint_medians <- as.matrix(timepoint_medians)
+rownames(timepoint_medians) <- rownames(expression_matrix)
+colnames(timepoint_medians) <- time_labels
+
+# Display the number of samples used at each timepoint.
+sample_counts <- data.frame(
+  Timepoint = names(sample_columns),
+  N_samples = vapply(sample_columns, length, integer(1)),
+  row.names = NULL
+)
+
+knitr::kable(sample_counts, caption = "Number of samples used to calculate each timepoint median.")
+```
+
+# 4. Create and standardize the MFuzz expression set
+
+MFuzz clusters genes by their **expression profile**, rather than by absolute expression level. Therefore, the timepoint-level expression matrix is standardized before clustering.
+
+```{r standardize}
+expression_set <- Biobase::ExpressionSet(
+  assayData = timepoint_medians
+)
+
+standardized_set <- Mfuzz::standardise(expression_set)
+
+standardized_matrix <- Biobase::exprs(standardized_set)
+
+# Remove genes that could not be standardized or have incomplete profiles.
+keep_genes <- apply(standardized_matrix, 1, function(x) all(is.finite(x)))
+n_removed <- sum(!keep_genes)
+
+if (n_removed > 0L) {
+  message("Removing ", n_removed, " genes with non-finite standardized values.")
+}
+
+standardized_matrix <- standardized_matrix[keep_genes, , drop = FALSE]
+
+if (nrow(standardized_matrix) < n_clusters) {
+  stop("Fewer genes remain after standardization than the requested number of clusters.")
+}
+
+standardized_set <- Biobase::ExpressionSet(
+  assayData = standardized_matrix
+)
+
+cat("Genes retained for clustering:", nrow(standardized_matrix), "\n")
+
+hist(
+  as.vector(standardized_matrix),
+  main = "Distribution of standardized expression values",
+  xlab = "Standardized expression",
+  breaks = 30,
+  col = "grey85",
+  border = "white"
+)
+```
+
+# 5. Estimate the fuzzifier parameter
+
+The fuzzifier parameter, \(m\), controls the degree of overlap in cluster membership. It is estimated using `mestimate()`.
+
+```{r estimate-m}
+m_estimate <- Mfuzz::mestimate(standardized_set)
+m_estimate
+```
+
+# 6. Assess the number of clusters
+
+`Dmin()` evaluates minimum centroid distances over a range of candidate cluster numbers. This provides information to consider when choosing the number of clusters; it does not by itself establish a uniquely correct cluster count.
+
+```{r dmin, fig.width=8, fig.height=6}
+cluster_range <- 3:10
+
+dmin_result <- Mfuzz::Dmin(
+  standardized_set,
+  m = m_estimate,
+  crange = cluster_range
+)
+```
+
+# 7. Fit the MFuzz model
+
+The original analysis uses seven clusters. A fixed random seed is set for reproducibility.
+
+```{r fit-mfuzz}
+set.seed(random_seed)
+
+mfuzz_fit <- Mfuzz::mfuzz(
+  standardized_set,
+  c = n_clusters,
+  m = m_estimate
+)
+
+cluster_sizes <- table(mfuzz_fit$cluster)
+
+cluster_summary <- data.frame(
+  Cluster = seq_len(n_clusters),
+  N_genes_assigned = as.integer(cluster_sizes[as.character(seq_len(n_clusters))]),
+  row.names = NULL
+)
+
+cluster_summary$N_genes_assigned[is.na(cluster_summary$N_genes_assigned)] <- 0L
+
+knitr::kable(cluster_summary, caption = "Number of genes assigned to each MFuzz cluster.")
+```
+
+## Cluster profiles
+
+The plots show standardized expression profiles across the five timepoints. The minimum membership threshold controls which genes are displayed in each cluster.
+
+```{r plot-clusters, fig.width=12, fig.height=9}
+Mfuzz::mfuzz.plot(
+  standardized_set,
+  cl = mfuzz_fit,
+  time.labels = time_labels,
+  ylim = c(-1.5, 1.5),
+  mfrow = c(3, 3),
+  new.window = FALSE,
+  min.mem = membership_threshold
+)
+```
+
+## Save cluster plots
+
+```{r save-cluster-plots, include=FALSE}
+pdf(
+  file = file.path(output_dir, "mfuzz_clusters.pdf"),
+  width = 12,
+  height = 9
+)
+Mfuzz::mfuzz.plot(
+  standardized_set,
+  cl = mfuzz_fit,
+  time.labels = time_labels,
+  ylim = c(-1.5, 1.5),
+  mfrow = c(3, 3),
+  new.window = FALSE,
+  min.mem = membership_threshold
+)
+dev.off()
+
+png(
+  filename = file.path(output_dir, "mfuzz_clusters.png"),
+  width = 3600,
+  height = 2700,
+  res = 300
+)
+Mfuzz::mfuzz.plot(
+  standardized_set,
+  cl = mfuzz_fit,
+  time.labels = time_labels,
+  ylim = c(-1.5, 1.5),
+  mfrow = c(3, 3),
+  new.window = FALSE,
+  min.mem = membership_threshold
+)
+dev.off()
+```
+
+# 8. Membership values and core genes
+
+## Membership distribution
+
+Each gene has a membership score for each cluster. Higher values indicate stronger membership in that cluster. The following table summarizes membership-score quantiles for each cluster.
+
+```{r membership-summary}
+membership_matrix <- mfuzz_fit$membership
+
+membership_quantiles <- apply(
+  membership_matrix,
+  2,
+  quantile,
+  probs = c(0.25, 0.50, 0.75, 0.80, 0.90, 0.95),
+  na.rm = TRUE
+)
+
+colnames(membership_quantiles) <- paste0("Cluster_", seq_len(ncol(membership_quantiles)))
+
+knitr::kable(
+  round(membership_quantiles, 3),
+  caption = "Membership-score quantiles by cluster."
+)
+
+write.table(
+  membership_quantiles,
+  file = file.path(output_dir, "membership_quantiles_late.txt"),
+  sep = "\t",
+  quote = FALSE,
+  col.names = NA
+)
+
+median_80th_percentile <- median(membership_quantiles["80%", ], na.rm = TRUE)
+cat("Median across clusters of the 80th membership percentile:", 
+    round(median_80th_percentile, 3), "\n")
+```
+
+## Export core genes by cluster
+
+`acore()` identifies the core genes for each cluster using the specified minimum membership threshold. One tab-delimited file is written per cluster.
+
+```{r export-core-genes}
+core_genes <- Mfuzz::acore(
+  standardized_set,
+  mfuzz_fit,
+  min.acore = membership_threshold
+)
+
+for (cluster_id in seq_len(n_clusters)) {
+  genes_in_cluster <- core_genes[[cluster_id]]
+
+  output_file <- file.path(
+    output_dir,
+    sprintf("cluster_%02d_core_genes.txt", cluster_id)
+  )
+
+  write.table(
+    genes_in_cluster,
+    file = output_file,
+    sep = "\t",
+    quote = FALSE,
+    row.names = FALSE,
+    col.names = FALSE
+  )
+}
+
+cat("Core-gene files written to:", normalizePath(output_dir), "\n")
+```
+
+# 9. Save analysis objects and session information
+
+The fitted model and standardized expression set are saved so that downstream enrichment analyses can be performed without rerunning the clustering step.
+
+```{r save-objects}
+saveRDS(
+  list(
+    standardized_set = standardized_set,
+    fuzzifier = m_estimate,
+    cluster_model = mfuzz_fit,
+    core_genes = core_genes,
+    timepoint_medians = timepoint_medians,
+    settings = list(
+      input_file = input_file,
+      n_clusters = n_clusters,
+      membership_threshold = membership_threshold,
+      random_seed = random_seed,
+      sample_columns = sample_columns
+    )
+  ),
+  file = file.path(output_dir, "mfuzz_late_analysis_objects.rds")
+)
+
+writeLines(
+  capture.output(sessionInfo()),
+  con = file.path(output_dir, "sessionInfo.txt")
+)
+
+sessionInfo()
+```
+
+# 10. Output files
+
+The following files are created in `mfuzz_late_outputs/`:
+
+- `mfuzz_clusters.pdf` and `mfuzz_clusters.png`: MFuzz cluster-profile plots.
+- `membership_quantiles_late.txt`: membership-score quantiles by cluster.
+- `cluster_01_core_genes.txt` through `cluster_07_core_genes.txt`: core genes for each cluster.
+- `mfuzz_late_analysis_objects.rds`: saved analysis objects and settings.
+- `sessionInfo.txt`: R and package session information.
+
+The core-gene files can be used as input for downstream functional-enrichment analyses.
