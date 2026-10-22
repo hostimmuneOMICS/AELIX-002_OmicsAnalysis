@@ -1,0 +1,385 @@
+
+---
+title: "AELIX-002: Cox Elastic Net by Timepoint"
+author: "Yovaninna Alarcón-Soto"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+# 1. Overview
+
+This analysis applies Cox elastic-net regression to gene-expression data
+from five timepoints (T1–T5) to identify genes associated with time to ART
+resumption.
+
+Models are fitted using `glmnet` with a Cox proportional hazards family
+and an elastic-net mixing parameter of `alpha = 0.5`.
+
+Leave-one-out cross-validation (LOOCV) is used to select the regularization
+parameter. Genes with non-zero coefficients are identified at both
+`lambda.min` and `lambda.1se`.
+
+# 2. Load packages
+
+```{r packages}
+library(glmnet)
+library(survival)
+library(readxl)
+```
+
+# 3. Import data
+
+```{r import-data}
+gene_file <- "GenesT1T2T3T4T5_for_glmnet.xlsx"
+outcome_file <- "TimeoffART.xlsx"
+
+db <- read_excel(gene_file)
+db2 <- read_excel(outcome_file)
+
+dim(db)
+dim(db2)
+```
+
+# 4. Prepare gene-expression matrices
+
+The input gene-expression data are divided into five timepoint-specific
+datasets. T1 and T3 contain 19 participants, whereas T2, T4 and T5 contain
+18 participants.
+
+```{r prepare-genes}
+x1 <- db[1:19, ]   # T1
+x2 <- db[20:37, ]  # T2
+x3 <- db[38:56, ]  # T3
+x4 <- db[57:74, ]  # T4
+x5 <- db[75:92, ]  # T5
+
+# Convert gene-expression data to numeric matrices
+x1 <- data.matrix(x1)
+x2 <- data.matrix(x2)
+x3 <- data.matrix(x3)
+x4 <- data.matrix(x4)
+x5 <- data.matrix(x5)
+
+dim(x1)
+dim(x2)
+dim(x3)
+dim(x4)
+dim(x5)
+```
+
+# 5. Prepare survival outcomes
+
+The second input file contains the survival outcome information. The first
+two columns are used to define the outcome supplied to the Cox models.
+
+```{r prepare-outcomes}
+y13 <- db2[, 2:3]
+
+# T1 and T3 use 19 participants; T2, T4 and T5 use 18
+y1 <- data.matrix(y13)
+y3 <- data.matrix(y13)
+
+y245 <- y13[1:18, ]
+
+y2 <- data.matrix(y245)
+y4 <- data.matrix(y245)
+y5 <- data.matrix(y245)
+
+dim(y1)
+dim(y2)
+dim(y3)
+dim(y4)
+dim(y5)
+```
+
+**Important:** Confirm that the two outcome columns are in the format
+expected by `glmnet` for a Cox model: follow-up time and event status.
+Also verify that each outcome row corresponds to the same participant as
+the corresponding row in its gene-expression matrix.
+
+# 6. Fit Cox elastic-net models
+
+The models are fitted separately for each timepoint.
+
+```{r fit-models}
+fitT1 <- glmnet(
+  x1, y1,
+  family = "cox",
+  alpha = 0.5
+)
+
+fitT2 <- glmnet(
+  x2, y2,
+  family = "cox",
+  alpha = 0.5
+)
+
+fitT3 <- glmnet(
+  x3, y3,
+  family = "cox",
+  alpha = 0.5
+)
+
+fitT4 <- glmnet(
+  x4, y4,
+  family = "cox",
+  alpha = 0.5
+)
+
+fitT5 <- glmnet(
+  x5, y5,
+  family = "cox",
+  alpha = 0.5
+)
+```
+
+## 6.1. Inspect model paths
+
+```{r model-paths, fig.width=10, fig.height=7}
+plot(fitT1, main = "T1: Cox elastic net")
+plot(fitT2, main = "T2: Cox elastic net")
+plot(fitT3, main = "T3: Cox elastic net")
+plot(fitT4, main = "T4: Cox elastic net")
+plot(fitT5, main = "T5: Cox elastic net")
+```
+
+# 7. Cross-validation
+
+LOOCV is performed using a number of folds equal to the number of
+participants available at each timepoint. The original random seeds are
+retained for reproducibility.
+
+```{r cross-validation}
+set.seed(20231009)
+cvfitT1 <- cv.glmnet(
+  x1, y1,
+  family = "cox",
+  alpha = 0.5,
+  nfolds = 19
+)
+
+set.seed(20231009)
+cvfitT2 <- cv.glmnet(
+  x2, y2,
+  family = "cox",
+  alpha = 0.5,
+  nfolds = 18
+)
+
+set.seed(20231009)
+cvfitT3 <- cv.glmnet(
+  x3, y3,
+  family = "cox",
+  alpha = 0.5,
+  nfolds = 19
+)
+
+set.seed(20231009)
+cvfitT4 <- cv.glmnet(
+  x4, y4,
+  family = "cox",
+  alpha = 0.5,
+  nfolds = 18
+)
+
+set.seed(25092023)
+cvfitT5 <- cv.glmnet(
+  x5, y5,
+  family = "cox",
+  alpha = 0.5,
+  nfolds = 18
+)
+```
+
+## 7.1. Cross-validation plots
+
+```{r cv-plots, fig.width=10, fig.height=7}
+plot(cvfitT1, main = "T1: LOOCV")
+plot(cvfitT2, main = "T2: LOOCV")
+plot(cvfitT3, main = "T3: LOOCV")
+plot(cvfitT4, main = "T4: LOOCV")
+plot(cvfitT5, main = "T5: LOOCV")
+```
+
+# 8. Select regularization parameters
+
+`lambda.min` is the value of lambda that minimizes the cross-validation
+error. `lambda.1se` is the largest value of lambda within one standard
+error of the minimum.
+
+```{r lambda-values}
+lambda_results <- data.frame(
+  Timepoint = paste0("T", 1:5),
+  Lambda_min = c(
+    cvfitT1$lambda.min,
+    cvfitT2$lambda.min,
+    cvfitT3$lambda.min,
+    cvfitT4$lambda.min,
+    cvfitT5$lambda.min
+  ),
+  Lambda_1se = c(
+    cvfitT1$lambda.1se,
+    cvfitT2$lambda.1se,
+    cvfitT3$lambda.1se,
+    cvfitT4$lambda.1se,
+    cvfitT5$lambda.1se
+  )
+)
+
+knitr::kable(
+  lambda_results,
+  digits = 6,
+  caption = "Selected regularization parameters by timepoint"
+)
+```
+
+# 9. Extract selected genes
+
+Genes with non-zero coefficients are extracted at `lambda.min` and
+`lambda.1se` for each timepoint.
+
+```{r extract-genes}
+extract_selected_genes <- function(cvfit, model, timepoint) {
+
+  coef_min <- as.matrix(coef(model, s = cvfit$lambda.min))
+  coef_1se <- as.matrix(coef(model, s = cvfit$lambda.1se))
+
+  selected_min <- data.frame(
+    Timepoint = timepoint,
+    Gene = rownames(coef_min),
+    Coefficient = as.numeric(coef_min[, 1]),
+    Lambda = "lambda.min"
+  )
+
+  selected_1se <- data.frame(
+    Timepoint = timepoint,
+    Gene = rownames(coef_1se),
+    Coefficient = as.numeric(coef_1se[, 1]),
+    Lambda = "lambda.1se"
+  )
+
+  selected_min <- selected_min[selected_min$Coefficient != 0, ]
+  selected_1se <- selected_1se[selected_1se$Coefficient != 0, ]
+
+  list(
+    lambda_min = selected_min,
+    lambda_1se = selected_1se
+  )
+}
+
+selected_T1 <- extract_selected_genes(cvfitT1, fitT1, "T1")
+selected_T2 <- extract_selected_genes(cvfitT2, fitT2, "T2")
+selected_T3 <- extract_selected_genes(cvfitT3, fitT3, "T3")
+selected_T4 <- extract_selected_genes(cvfitT4, fitT4, "T4")
+selected_T5 <- extract_selected_genes(cvfitT5, fitT5, "T5")
+
+selected_min <- do.call(
+  rbind,
+  lapply(
+    list(selected_T1, selected_T2, selected_T3,
+         selected_T4, selected_T5),
+    function(z) z$lambda_min
+  )
+)
+
+selected_1se <- do.call(
+  rbind,
+  lapply(
+    list(selected_T1, selected_T2, selected_T3,
+         selected_T4, selected_T5),
+    function(z) z$lambda_1se
+  )
+)
+
+rownames(selected_min) <- NULL
+rownames(selected_1se) <- NULL
+```
+
+## 9.1. Number of selected genes
+
+```{r selected-gene-counts}
+gene_counts <- data.frame(
+  Timepoint = paste0("T", 1:5),
+  N_lambda_min = sapply(
+    list(selected_T1, selected_T2, selected_T3,
+         selected_T4, selected_T5),
+    function(z) nrow(z$lambda_min)
+  ),
+  N_lambda_1se = sapply(
+    list(selected_T1, selected_T2, selected_T3,
+         selected_T4, selected_T5),
+    function(z) nrow(z$lambda_1se)
+  )
+)
+
+knitr::kable(
+  gene_counts,
+  caption = "Number of genes with non-zero coefficients"
+)
+```
+
+## 9.2. Selected genes at lambda.min
+
+```{r genes-lambda-min}
+knitr::kable(
+  selected_min,
+  digits = 6,
+  caption = "Genes selected at lambda.min"
+)
+```
+
+## 9.3. Selected genes at lambda.1se
+
+```{r genes-lambda-1se}
+knitr::kable(
+  selected_1se,
+  digits = 6,
+  caption = "Genes selected at lambda.1se"
+)
+```
+
+# 10. Export results
+
+```{r export-results}
+write.csv(
+  lambda_results,
+  "CoxElasticNet_LambdaValues.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  selected_min,
+  "CoxElasticNet_SelectedGenes_lambda_min.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  selected_1se,
+  "CoxElasticNet_SelectedGenes_lambda_1se.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  gene_counts,
+  "CoxElasticNet_SelectedGeneCounts.csv",
+  row.names = FALSE
+)
+```
+
+# 11. Session information
+
+```{r session-info}
+sessionInfo()
+```
